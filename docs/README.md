@@ -801,3 +801,377 @@ El protocolo definido permite implementar un sistema de monitorización meteorol
 - **suscripción a notificaciones automáticas** cuando cambian determinadas variables.
 
 La especificación formal en ABNF detalla la estructura de los mensajes, los campos obligatorios y opcionales, los tipos de datos admitidos y las principales restricciones sintácticas y semánticas del protocolo. De este modo, un tercero puede implementar un cliente compatible sin necesidad de consultar el código fuente original.
+
+## 14. Diagramas de estados
+
+### 14.1. Diagrama de estados del cliente
+
+> En este sistema, el cliente lógico es la aplicación web que se comunica con el servidor a través del proxy WebSocket. El diagrama refleja los estados desde el punto de vista del cliente de aplicación.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Desconectado
+
+    Desconectado --> Conectando: Abrir WebSocket
+    Conectando --> Operativo: Conexión WS abierta / proxy enlazado con TCP
+    Conectando --> ErrorConexion: Fallo de conexión WS o error 500 del proxy
+
+    ErrorConexion --> Desconectado: Reintentar o abortar
+
+    Operativo --> EsperandoRespuesta: Enviar LIST / GET / SUB / UNSUB
+    EsperandoRespuesta --> Operativo: Respuesta 200 correcta
+    EsperandoRespuesta --> ErrorProtocolo: Respuesta 400 / 404 / 500
+    EsperandoRespuesta --> Desconectado: Pérdida de conexión
+
+    ErrorProtocolo --> Operativo: Corregir petición y continuar
+    ErrorProtocolo --> Desconectado: Cerrar conexión
+
+    Operativo --> Suscrito: SUB aceptado
+    Suscrito --> Suscrito: Recepción de NOTIF
+    Suscrito --> Operativo: UNSUB aceptado
+    Suscrito --> Desconectado: Pérdida de conexión
+
+    Operativo --> Finalizado: Cierre voluntario
+    Suscrito --> Finalizado: Cierre voluntario
+    Finalizado --> [*]
+```
+
+### 14.2. Explicación del comportamiento del cliente
+
+El cliente comienza en estado **Desconectado**. Cuando abre el canal WebSocket, pasa a **Conectando**. Si la conexión se establece correctamente y el proxy logra enlazar con el servidor TCP, entra en **Operativo**, estado desde el que puede enviar peticiones `LIST`, `GET`, `SUB` y `UNSUB`.
+
+Cuando el cliente envía una petición, pasa temporalmente a **EsperandoRespuesta**. Si el servidor responde correctamente con estado `200`, vuelve a **Operativo**. Si recibe un error (`400`, `404` o `500`), entra en **ErrorProtocolo**, desde donde puede corregir la petición o finalizar la sesión.
+
+Cuando una suscripción `SUB` es aceptada, el cliente entra en estado **Suscrito**. En este estado puede seguir recibiendo mensajes `NOTIF` de manera asíncrona mientras la conexión permanezca activa. Si solicita `UNSUB`, vuelve a **Operativo**. Si la conexión se pierde, pasa a **Desconectado**.
+
+### 14.3. Diagrama de estados del servidor
+
+> El siguiente diagrama representa el comportamiento del servidor respecto a cada conexión de cliente. El servidor global permanece en escucha continua, mientras que cada sesión cliente evoluciona por los estados mostrados.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Inicializando
+    Inicializando --> Escuchando: bind() + listen()
+
+    Escuchando --> SesionCliente: accept()
+
+    state SesionCliente {
+        [*] --> Recibiendo
+
+        Recibiendo --> ProcesandoLIST: LIST válido
+        Recibiendo --> ProcesandoGET: GET válido
+        Recibiendo --> ProcesandoSUB: SUB válido
+        Recibiendo --> ProcesandoUNSUB: UNSUB válido
+        Recibiendo --> ErrorPeticion: JSON inválido / comando inválido / campos inválidos
+        Recibiendo --> Cerrando: EOF / desconexión / excepción
+
+        ProcesandoLIST --> Recibiendo: RESP_LIST (200)
+        ProcesandoGET --> Recibiendo: Respuesta 200 o 404
+        ProcesandoSUB --> SuscripcionActiva: SUB aceptado (200)
+        ProcesandoSUB --> Recibiendo: Error 400 o 404
+        ProcesandoUNSUB --> Recibiendo: Respuesta 200
+
+        SuscripcionActiva --> Notificando: Cambio detectado en variable suscrita
+        Notificando --> SuscripcionActiva: Envío de NOTIF
+        SuscripcionActiva --> Recibiendo: Nueva petición del cliente
+        SuscripcionActiva --> Cerrando: Desconexión / excepción
+
+        ErrorPeticion --> Recibiendo: Error gestionado y sesión continúa
+        ErrorPeticion --> Cerrando: Error fatal
+    }
+
+    SesionCliente --> Escuchando: Liberar recursos del cliente
+```
+
+### 14.4. Explicación del comportamiento del servidor
+
+El servidor arranca en **Inicializando**, crea el socket TCP, hace `bind`, entra en modo escucha y pasa al estado **Escuchando**. Cuando un cliente establece conexión, el servidor crea una sesión independiente para ese cliente.
+
+Dentro de cada sesión, el estado principal es **Recibiendo**, en el que el servidor espera mensajes JSON terminados en salto de línea. Dependiendo del comando recibido, pasa a uno de los estados de procesamiento:
+
+- **ProcesandoLIST**, si el cliente solicita el catálogo de ciudades.
+- **ProcesandoGET**, si pide una consulta puntual.
+- **ProcesandoSUB**, si solicita una suscripción.
+- **ProcesandoUNSUB**, si quiere cancelar suscripciones.
+
+Si una suscripción es aceptada, la sesión entra en **SuscripciónActiva**. En ese estado, el cliente sigue pudiendo enviar nuevas peticiones, y además el servidor puede entrar en **Notificando** cuando detecta cambios en las variables suscritas y envía un mensaje `NOTIF`.
+
+Si se produce una desconexión, un cierre del socket o una excepción no recuperable, la sesión pasa a **Cerrando**, se eliminan las suscripciones asociadas a esa conexión y el servidor vuelve a **Escuchando** para aceptar nuevos clientes.
+
+---
+
+## 15. Diagrama de secuencia
+
+El siguiente diagrama muestra una operación típica completa: establecimiento de conexión, consulta del catálogo, consulta puntual, suscripción, recepción de notificación y cancelación de la suscripción.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente Web
+    participant P as Proxy WebSocket
+    participant S as Servidor TCP
+    participant O as API OpenWeather
+
+    C->>P: Abrir conexión WebSocket
+    P->>S: Abrir conexión TCP
+    S-->>P: Conexión aceptada
+    P-->>C: Canal operativo
+
+    C->>P: {"command":"LIST"}
+    P->>S: {"command":"LIST"}\n
+    S-->>P: {"status":200,"type":"RESP_LIST",...}
+    P-->>C: {"status":200,"type":"RESP_LIST",...}
+
+    C->>P: {"command":"GET","city":"Granada"}
+    P->>S: {"command":"GET","city":"Granada"}\n
+    S->>O: Consulta meteorológica actual
+    O-->>S: Datos de Granada
+    S-->>P: {"status":200,"city":"Granada","data":...}
+    P-->>C: {"status":200,"city":"Granada","data":...}
+
+    C->>P: {"command":"SUB","city":"Granada","variables":["temp","hum"]}
+    P->>S: {"command":"SUB","city":"Granada","variables":["temp","hum"]}\n
+    S->>O: Consulta inicial para suscripción
+    O-->>S: Datos meteorológicos
+    S-->>P: {"status":200,"msg":"Suscrito a Granada","current":...}
+    P-->>C: {"status":200,"msg":"Suscrito a Granada","current":...}
+
+    loop Cada 60 segundos
+        S->>O: Actualizar datos de ciudades suscritas
+        O-->>S: Nuevos datos
+        alt Cambia alguna variable suscrita
+            S-->>P: {"type":"NOTIF","city":"Granada","data":{"temp":13.1}}
+            P-->>C: {"type":"NOTIF","city":"Granada","data":{"temp":13.1}}
+        else No hay cambios
+            S-->>S: No se envía notificación
+        end
+    end
+
+    C->>P: {"command":"UNSUB","city":"Granada"}
+    P->>S: {"command":"UNSUB","city":"Granada"}\n
+    S-->>P: {"status":200,"msg":"Suscripción a Granada cancelada"}
+    P-->>C: {"status":200,"msg":"Suscripción a Granada cancelada"}
+
+    C->>P: Cierre WebSocket
+    P->>S: Cierre TCP
+```
+
+### 15.1. Explicación del flujo temporal
+
+La secuencia comienza cuando el cliente establece una conexión WebSocket con el proxy. A continuación, el proxy abre una conexión TCP con el servidor. Una vez creada la ruta de comunicación, el cliente ya puede enviar mensajes del protocolo.
+
+Primero puede solicitar el catálogo mediante `LIST`, luego hacer una consulta puntual con `GET`, y después registrar una suscripción con `SUB`. Una vez activa la suscripción, el servidor revisa periódicamente el estado meteorológico de las ciudades suscritas. Si detecta cambios en alguna variable monitorizada, genera una notificación `NOTIF`, que atraviesa el proxy y llega al cliente.
+
+Finalmente, el cliente puede cancelar la suscripción con `UNSUB` o cerrar directamente la conexión. Si la conexión se cierra, las suscripciones asociadas a esa sesión desaparecen.
+
+---
+
+## 16. Gestión explícita de errores
+
+Para que el protocolo quede correctamente especificado, es necesario definir cómo actuar ante errores sintácticos, errores semánticos y fallos de comunicación.
+
+### 16.1. Errores contemplados
+
+#### a) Mensaje mal formado
+
+Se produce cuando el cliente envía un mensaje que no es JSON válido o que no respeta la estructura esperada.
+
+**Ejemplo:**
+
+```json
+{"command":"GET","city":Granada}
+```
+
+Aquí `Granada` no está entre comillas, por lo que el JSON es inválido.
+
+**Respuesta del sistema:**
+
+- En la implementación actual, el proxy detecta el JSON inválido y lo registra en consola, pero no devuelve una respuesta formal al cliente.
+- A nivel de especificación del protocolo, la respuesta correcta debería ser:
+
+```json
+{"status":400,"msg":"JSON mal formado"}
+```
+
+**Reacción esperada del cliente:**
+
+- No debe asumir que la operación se ha realizado.
+- Debe corregir el mensaje y reenviarlo.
+- La conexión puede mantenerse abierta si el error es recuperable.
+
+#### b) Comando no soportado
+
+Se produce cuando el campo `command` tiene un valor no reconocido.
+
+**Ejemplo:**
+
+```json
+{"command":"DELETE","city":"Granada"}
+```
+
+**Respuesta del sistema:**
+
+- En la implementación actual, este caso no genera una respuesta explícita.
+- En la especificación del protocolo debe definirse:
+
+```json
+{"status":400,"msg":"Comando no soportado"}
+```
+
+**Reacción esperada del cliente:**
+
+- Mostrar un error de operación inválida.
+- Permanecer en estado operativo si la conexión sigue activa.
+
+#### c) Operación no permitida en el estado actual
+
+El caso más claro en la implementación es intentar suscribirse dos veces a la misma ciudad dentro de la misma conexión.
+
+**Ejemplo:**
+
+```json
+{"command":"SUB","city":"Granada"}
+```
+
+enviada dos veces seguidas.
+
+**Respuesta del servidor:**
+
+```json
+{"status":400,"msg":"Ya estás suscrito a las alertas de Granada. ✅"}
+```
+
+**Reacción esperada del cliente:**
+
+- Mantener la suscripción previa.
+- Informar al usuario de que ya existe una suscripción activa.
+- No reiniciar el flujo ni duplicar el estado interno.
+
+#### d) Petición con ciudad inválida o no encontrada
+
+Se produce cuando la ciudad no puede resolverse mediante la API meteorológica externa.
+
+**Ejemplo:**
+
+```json
+{"command":"GET","city":"CiudadInventada"}
+```
+
+**Respuesta del servidor en `GET`:**
+
+```json
+{"status":404,"msg":"Ciudad no encontrada"}
+```
+
+**Respuesta del servidor en `SUB`:**
+
+```json
+{"status":404,"msg":"Ciudad no válida"}
+```
+
+**Reacción esperada del cliente:**
+
+- No debe dar por válida la consulta o la suscripción.
+- Debe mostrar el error al usuario.
+- Puede permitir que el usuario introduzca otra ciudad.
+
+#### e) Pérdida de conexión entre cliente y proxy
+
+Se produce cuando se cierra el WebSocket o se interrumpe la comunicación.
+
+**Respuesta del sistema:**
+
+- No siempre existe un mensaje de error formal; puede detectarse por cierre del canal.
+- El cliente debe pasar a estado **Desconectado**.
+
+**Reacción esperada del cliente:**
+
+- Informar de la desconexión.
+- Permitir reconexión manual o automática.
+- Si había suscripciones activas, deberá volver a enviarlas tras reconectar, ya que están asociadas a la sesión anterior.
+
+#### f) Pérdida de conexión entre proxy y servidor
+
+Se produce cuando el proxy no consigue abrir o mantener la conexión TCP con el servidor.
+
+**Respuesta del proxy:**
+
+```json
+{"status":500,"msg":"Error interno del proxy al conectar al servidor."}
+```
+
+**Reacción esperada del cliente:**
+
+- Pasar a estado de error de conexión.
+- No considerar la operación completada.
+- Permitir reintento posterior.
+
+#### g) Timeout al consultar la API externa
+
+La implementación usa:
+
+```python
+requests.get(url, timeout=5)
+```
+
+Por tanto, si la API externa tarda demasiado, la petición expira.
+
+**Comportamiento actual del servidor:**
+
+- El error se captura y se trata como fallo de obtención de datos.
+- En `GET` y `SUB`, esto acaba generando una respuesta equivalente a ciudad no válida o no encontrada.
+- En el bucle de notificaciones, simplemente no se actualizan los datos ni se envía notificación.
+
+**Observación importante:**
+
+Desde el punto de vista de la práctica, sería más preciso distinguir este caso con un error específico, por ejemplo:
+
+```json
+{"status":504,"msg":"Timeout consultando servicio meteorológico externo"}
+```
+
+aunque esta mejora no está implementada todavía en el código actual.
+
+**Reacción esperada del cliente:**
+
+- Tratarlo como un fallo temporal.
+- Permitir repetir la consulta más tarde.
+- No eliminar automáticamente suscripciones si el fallo es puntual.
+
+### 16.2. Política general de reacción del cliente
+
+Ante cualquier error, el cliente debe aplicar estas reglas:
+
+1. Si recibe `200`, considera la operación completada correctamente.
+2. Si recibe `400`, interpreta que la petición era inválida o no permitida en el estado actual.
+3. Si recibe `404`, interpreta que la ciudad solicitada no es válida o no se ha encontrado.
+4. Si recibe `500`, interpreta que existe un fallo interno del proxy o del servicio.
+5. Si detecta cierre de conexión sin respuesta, debe asumir pérdida de sesión.
+6. Si la sesión se pierde, todas las suscripciones asociadas a esa conexión deben considerarse canceladas y, si el usuario sigue interesado, deberán reenviarse tras la reconexión.
+
+### 16.3. Resumen de errores del protocolo
+
+Se recomienda que la especificación del protocolo contemple al menos las siguientes respuestas:
+
+```json
+{"status":400,"msg":"JSON mal formado"}
+{"status":400,"msg":"Comando no soportado"}
+{"status":400,"msg":"Ya estás suscrito a las alertas de <ciudad>"}
+{"status":404,"msg":"Ciudad no encontrada"}
+{"status":404,"msg":"Ciudad no válida"}
+{"status":500,"msg":"Error interno del proxy al conectar al servidor."}
+```
+
+Opcionalmente, para una versión más robusta:
+
+```json
+{"status":504,"msg":"Timeout consultando servicio meteorológico externo"}
+```
+
+---
+
+## 17. Conclusión sobre el comportamiento dinámico del protocolo
+
+Los diagramas de estados muestran que el protocolo distingue claramente entre conexión, operación normal, suscripción activa, notificación asíncrona, error y finalización. El diagrama de secuencia refleja el orden temporal en el que se intercambian los mensajes entre cliente, proxy, servidor y API externa.
+
+Además, la gestión explícita de errores permite definir cómo debe reaccionar cada extremo ante mensajes inválidos, comandos no soportados, operaciones prohibidas, fallos de conectividad y timeouts, haciendo que la especificación sea lo bastante precisa como para que un tercero pueda implementar el protocolo sin consultar el código fuente.
