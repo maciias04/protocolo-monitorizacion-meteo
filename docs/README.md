@@ -793,6 +793,12 @@ El servidor mantiene una lista de ciudades soportadas, utilizada en la respuesta
 
 ## 12.1. Servidor
 
+Instalar dependencias si es necesario:
+
+```bash
+sudo apt install python3-requests -y
+```
+
 Ejecutar el servidor TCP:
 
 ```bash
@@ -811,7 +817,6 @@ Instalar dependencias si es necesario:
 
 ```bash
 sudo apt install python3-websockets -y
-sudo apt install python3-requests -y
 ```
 
 Ejecutar el proxy:
