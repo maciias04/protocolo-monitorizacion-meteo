@@ -1,0 +1,55 @@
+
+### 14.3. Diagrama de estados del servidor
+
+> El siguiente diagrama representa el comportamiento del servidor respecto a cada conexión de cliente. El servidor global permanece en escucha continua, mientras que cada sesión cliente evoluciona por los estados mostrados.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Inicializando
+    Inicializando --> Escuchando: bind() + listen()
+
+    Escuchando --> SesionCliente: accept()
+
+    state SesionCliente {
+        [*] --> Recibiendo
+
+        Recibiendo --> ProcesandoLIST: LIST válido
+        Recibiendo --> ProcesandoGET: GET válido
+        Recibiendo --> ProcesandoSUB: SUB válido
+        Recibiendo --> ProcesandoUNSUB: UNSUB válido
+        Recibiendo --> ErrorPeticion: JSON inválido / comando inválido / campos inválidos
+        Recibiendo --> Cerrando: EOF / desconexión / excepción
+
+        ProcesandoLIST --> Recibiendo: RESP_LIST (200)
+        ProcesandoGET --> Recibiendo: Respuesta 200 o 404
+        ProcesandoSUB --> SuscripcionActiva: SUB aceptado (200)
+        ProcesandoSUB --> Recibiendo: Error 400 o 404
+        ProcesandoUNSUB --> Recibiendo: Respuesta 200
+
+        SuscripcionActiva --> Notificando: Cambio detectado en variable suscrita
+        Notificando --> SuscripcionActiva: Envío de NOTIF
+        SuscripcionActiva --> Recibiendo: Nueva petición del cliente
+        SuscripcionActiva --> Cerrando: Desconexión / excepción
+
+        ErrorPeticion --> Recibiendo: Error gestionado y sesión continúa
+        ErrorPeticion --> Cerrando: Error fatal
+    }
+
+    SesionCliente --> Escuchando: Liberar recursos del cliente
+```
+
+### 14.4. Explicación del comportamiento del servidor
+
+El servidor arranca en **Inicializando**, crea el socket TCP, hace `bind`, entra en modo escucha y pasa al estado **Escuchando**. Cuando un cliente establece conexión, el servidor crea una sesión independiente para ese cliente.
+
+Dentro de cada sesión, el estado principal es **Recibiendo**, en el que el servidor espera mensajes JSON terminados en salto de línea. Dependiendo del comando recibido, pasa a uno de los estados de procesamiento:
+
+- **ProcesandoLIST**, si el cliente solicita el catálogo de ciudades.
+- **ProcesandoGET**, si pide una consulta puntual.
+- **ProcesandoSUB**, si solicita una suscripción.
+- **ProcesandoUNSUB**, si quiere cancelar suscripciones.
+
+Si una suscripción es aceptada, la sesión entra en **SuscripciónActiva**. En ese estado, el cliente sigue pudiendo enviar nuevas peticiones, y además el servidor puede entrar en **Notificando** cuando detecta cambios en las variables suscritas y envía un mensaje `NOTIF`.
+
+Si se produce una desconexión, un cierre del socket o una excepción no recuperable, la sesión pasa a **Cerrando**, se eliminan las suscripciones asociadas a esa conexión y el servidor vuelve a **Escuchando** para aceptar nuevos clientes.
+
