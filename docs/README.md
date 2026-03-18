@@ -113,6 +113,179 @@ Además, el proxy puede generar un error `500` si no logra conectar con el servi
 
 ---
 
+## 5. Especificación formal del protocolo en ABNF
+
+A continuación se define formalmente el formato de los mensajes del protocolo mediante **ABNF**.
+
+> **Nota**: aunque JSON no obliga a un orden fijo de los campos, en esta especificación se muestra un orden canónico recomendado para facilitar la interoperabilidad.
+
+```abnf
+; =========================================================
+; PROTOCOLO METEO
+; Serialización JSON UTF-8
+; En TCP, cada mensaje termina en LF (%x0A)
+; =========================================================
+
+tcp-message     = message LF
+LF              = %x0A
+OWS             = *(SP / HTAB)
+
+message         = request / response / notification
+
+; =========================
+; PETICIONES
+; =========================
+
+request         = list-req / get-req / sub-req / unsub-req
+
+list-req        = "{" OWS q-command OWS ":" OWS q-LIST OWS "}"
+
+get-req         = "{" OWS
+                  q-command OWS ":" OWS q-GET
+                  [ OWS "," OWS q-city OWS ":" OWS city ]
+                  OWS "}"
+
+sub-req         = "{" OWS
+                  q-command OWS ":" OWS q-SUB
+                  [ OWS "," OWS q-city OWS ":" OWS city ]
+                  [ OWS "," OWS q-variables OWS ":" OWS variable-list ]
+                  OWS "}"
+
+unsub-req       = "{" OWS
+                  q-command OWS ":" OWS q-UNSUB
+                  [ OWS "," OWS q-city OWS ":" OWS city ]
+                  OWS "}"
+
+; =========================
+; RESPUESTAS
+; =========================
+
+response        = list-resp / get-resp-ok / sub-resp-ok /
+                  unsub-resp-ok / error-resp / proxy-error-resp
+
+list-resp       = "{" OWS
+                  q-status OWS ":" OWS status-200 OWS "," OWS
+                  q-type   OWS ":" OWS q-RESP_LIST OWS "," OWS
+                  q-data   OWS ":" OWS city-list OWS "," OWS
+                  q-msg    OWS ":" OWS text
+                  OWS "}"
+
+get-resp-ok     = "{" OWS
+                  q-status OWS ":" OWS status-200 OWS "," OWS
+                  q-city   OWS ":" OWS city OWS "," OWS
+                  q-data   OWS ":" OWS weather-data
+                  OWS "}"
+
+sub-resp-ok     = "{" OWS
+                  q-status  OWS ":" OWS status-200 OWS "," OWS
+                  q-msg     OWS ":" OWS text OWS "," OWS
+                  q-current OWS ":" OWS weather-data
+                  OWS "}"
+
+unsub-resp-ok   = "{" OWS
+                  q-status OWS ":" OWS status-200 OWS "," OWS
+                  q-msg    OWS ":" OWS text
+                  OWS "}"
+
+error-resp      = "{" OWS
+                  q-status OWS ":" OWS (status-400 / status-404 / status-500) OWS "," OWS
+                  q-msg    OWS ":" OWS text
+                  OWS "}"
+
+proxy-error-resp = error-resp
+
+; =========================
+; NOTIFICACIONES
+; =========================
+
+notification    = "{" OWS
+                  q-type OWS ":" OWS q-NOTIF OWS "," OWS
+                  q-city OWS ":" OWS city OWS "," OWS
+                  q-data OWS ":" OWS notif-data
+                  OWS "}"
+
+; =========================
+; ESTRUCTURAS INTERNAS
+; =========================
+
+city-list       = "[" OWS city *( OWS "," OWS city ) OWS "]"
+
+variable-list   = "[" OWS variable *( OWS "," OWS variable ) OWS "]"
+
+variable        = q-temp / q-hum / q-pres / q-wind
+
+weather-data    = "{" OWS
+                  temp-member OWS "," OWS
+                  hum-member  OWS "," OWS
+                  pres-member OWS "," OWS
+                  wind-member
+                  OWS "}"
+
+notif-data      = "{" OWS
+                  change-member *( OWS "," OWS change-member )
+                  OWS "}"
+
+change-member   = temp-member / hum-member / pres-member / wind-member
+
+temp-member     = q-temp OWS ":" OWS number
+hum-member      = q-hum  OWS ":" OWS number
+pres-member     = q-pres OWS ":" OWS number
+wind-member     = q-wind OWS ":" OWS number
+
+; =========================
+; NOMBRES DE CAMPOS
+; =========================
+
+q-command       = DQUOTE "command" DQUOTE
+q-city          = DQUOTE "city" DQUOTE
+q-variables     = DQUOTE "variables" DQUOTE
+q-status        = DQUOTE "status" DQUOTE
+q-type          = DQUOTE "type" DQUOTE
+q-data          = DQUOTE "data" DQUOTE
+q-msg           = DQUOTE "msg" DQUOTE
+q-current       = DQUOTE "current" DQUOTE
+
+; =========================
+; VALORES LITERALES
+; =========================
+
+q-LIST          = DQUOTE "LIST" DQUOTE
+q-GET           = DQUOTE "GET" DQUOTE
+q-SUB           = DQUOTE "SUB" DQUOTE
+q-UNSUB         = DQUOTE "UNSUB" DQUOTE
+q-RESP_LIST     = DQUOTE "RESP_LIST" DQUOTE
+q-NOTIF         = DQUOTE "NOTIF" DQUOTE
+
+q-temp          = DQUOTE "temp" DQUOTE
+q-hum           = DQUOTE "hum" DQUOTE
+q-pres          = DQUOTE "pres" DQUOTE
+q-wind          = DQUOTE "wind" DQUOTE
+
+status-200      = "200"
+status-400      = "400"
+status-404      = "404"
+status-500      = "500"
+
+; =========================
+; TIPOS BÁSICOS
+; =========================
+
+city            = string
+text            = string
+
+number          = ["-"] int [ frac ]
+int             = "0" / (NZDIGIT *DIGIT)
+NZDIGIT         = %x31-39
+frac            = "." 1*DIGIT
+
+string          = DQUOTE *char DQUOTE
+char            = unescaped / escape
+unescaped       = %x20-21 / %x23-5B / %x5D-FF
+escape          = %x5C ( DQUOTE / %x5C / "/" / "b" / "f" / "n" / "r" / "t" )
+```
+
+---
+
 ## 6. Definición de mensajes y semántica
 
 ## 6.1. Mensaje `LIST`
