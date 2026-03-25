@@ -1,5 +1,5 @@
-import asyncio
-import websockets
+import asyncio # Gestiona tareas que pueden "esperar" sin bloquear el programa. Es la base de WebSockets para manejar muchos clientes web a la vez.
+import websockets # Es la librería específica para crear el servidor al que se conectará el navegador.
 import socket
 import json
 import threading
