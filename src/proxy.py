@@ -5,9 +5,9 @@ import json
 import threading
 
 # Configuración
-WS_HOST = '0.0.0.0'
+WS_HOST = '0.0.0.0' #por donde escucha el proxy)
 WS_PORT = 8080
-TCP_HOST = '127.0.0.1' 
+TCP_HOST = '127.0.0.1' #a donde envia los datos (servidor)
 TCP_PORT = 5000
 
 async def handle_client(websocket):
@@ -49,7 +49,7 @@ async def handle_client(websocket):
 
     # 3. Bucle de lectura desde el WebSocket hacia el servidor TCP
     try:
-        async for message in websocket:
+        async for message in websocket: # Escucha lo que el cliente escribe en la web
             print(f"[PROXY WS->TCP] Recibido: {message}")
             try:
                 # Validar que es JSON, por si acaso
